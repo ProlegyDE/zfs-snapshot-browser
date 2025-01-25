@@ -14,9 +14,9 @@ Use only if you:
 
 ## :gear: Installation
 ```bash
-git clone https://github.com/your-username/zfs-snapshot-manager.git
+git clone https://github.com/ProlegyDE/zfs-snapshot-browser.git
 cd zfs-snapshot-manager
-chmod +x zfs_manager.py
+chmod +x zfs-snapshot-browser.py
 ```
 
 ## :computer: Features
@@ -28,7 +28,7 @@ chmod +x zfs_manager.py
 
 ## :rocket: Usage
 ```bash
-sudo ./zfs_manager.py
+sudo ./zfs-snapshot-browser.py
 ```
 
 ### Controls:
@@ -69,14 +69,3 @@ Contributions are welcome! Please:
 - Use Issues for bug reports
 - Submit Pull Requests with change descriptions
 - Avoid breaking changes without discussion
-
----
-
-**To use:**  
-1. Create a new file named `README.md`  
-2. Paste this content  
-3. Replace placeholder values (like `your-username` in the git clone URL)  
-4. Add the recommended files:
-   - `LICENSE` (MIT License text)
-   - `requirements.txt` (if needed)
-   - `CONTRIBUTING.md` (optional but recommended)
