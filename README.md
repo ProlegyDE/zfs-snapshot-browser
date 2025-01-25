@@ -15,7 +15,7 @@ Use only if you:
 ## :gear: Installation
 ```bash
 git clone https://github.com/ProlegyDE/zfs-snapshot-browser.git
-cd zfs-snapshot-manager
+cd zfs-snapshot-browser
 chmod +x zfs-snapshot-browser.py
 ```
 
