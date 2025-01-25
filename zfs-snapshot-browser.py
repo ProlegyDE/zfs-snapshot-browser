@@ -55,17 +55,17 @@ class CursesColors:
                 }
                 subprocess_args.update(kwargs)
                 
-                with subprocess.Popen(cmd, *args, **subprocess_args) as proc:
-                    while proc.poll() is None:
-                        win.addstr(1, len(message) + 2, next(spinner))
-                        win.refresh()
-                        time.sleep(0.1)
-                    if proc.returncode != 0:
-                        error = CalledProcessError(
-                            proc.returncode, cmd,
-                            output=proc.stdout.read(),
-                            stderr=proc.stderr.read()
-                        )
+                proc = subprocess.Popen(cmd, *args, **subprocess_args)
+                while proc.poll() is None:
+                    win.addstr(1, len(message) + 2, next(spinner))
+                    win.refresh()
+                    time.sleep(0.1)
+                if proc.returncode != 0:
+                    error = CalledProcessError(
+                        proc.returncode, cmd,
+                        output=proc.stdout.read() if proc.stdout else '',
+                        stderr=proc.stderr.read() if proc.stderr else ''
+                    )
             else:
                 result = operation(*args, **kwargs)
         except Exception as e:
@@ -111,7 +111,7 @@ class FileBrowser:
     def _force_cleanup(self):
         if hasattr(self, 'mount_point') and self.mount_point:
             try:
-                if self.is_zvol:
+                if self.is_zvol and os.path.ismount(self.mount_point):
                     subprocess.run(['umount', self.mount_point], check=False)
                 shutil.rmtree(self.mount_point, ignore_errors=True)
             except Exception as e:
@@ -142,7 +142,7 @@ class FileBrowser:
                 
                 self.empty_directory = not bool(self.files)
                 self.files.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
-                self.selected_idx = min(self.selected_idx, len(self.files)-1)
+                self.selected_idx = max(0, min(self.selected_idx, len(self.files)-1))
 
         except Exception as e:
             self.show_error(str(e))
@@ -150,7 +150,7 @@ class FileBrowser:
 
     def show_error(self, message):
         h, w = self.stdscr.getmaxyx()
-        error_msg = message.ljust(w-1)[:w-1]
+        error_msg = message[:w-1]
         self.stdscr.addstr(h-1, 0, error_msg, self.colors['error'])
         self.stdscr.refresh()
         time.sleep(2)
@@ -162,16 +162,16 @@ class FileBrowser:
         self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
 
-        header = f" {self.source_name} @ {self.current_dir} "
-        self.stdscr.addstr(0, 0, header.ljust(w, ' '), self.colors['header'])
+        header = f" {self.source_name} @ {self.current_dir} "[:w-1]
+        self.stdscr.addstr(0, 0, header, self.colors['header'])
 
         if self.empty_directory:
             self._draw_empty_message(h, w)
         else:
             self._draw_file_list(h, w)
 
-        status = f"[←]Back [→]Open [R]Restore [q]Close | Marked: {len(self.marked_files)}"
-        self.stdscr.addstr(h-2, 0, status[:w-1], curses.A_BOLD)
+        status = f"[←]Back [→]Open [R]Restore [q]Close | Marked: {len(self.marked_files)}"[:w-1]
+        self.stdscr.addstr(h-2, 0, status, curses.A_BOLD)
         self.stdscr.refresh()
 
     def _draw_empty_message(self, h, w):
@@ -181,7 +181,7 @@ class FileBrowser:
         ]
         for i, msg in enumerate(messages, 1):
             if i < h-1:
-                self.stdscr.addstr(i, 0, msg, self.colors['error'])
+                self.stdscr.addstr(i, 0, msg[:w-1], self.colors['error'])
 
     def _draw_file_list(self, h, w):
         max_rows = h - 4
@@ -197,14 +197,14 @@ class FileBrowser:
             if y_pos >= h - 2:
                 break
 
-            line = self._format_file_entry(list_idx, entry)
+            line = self._format_file_entry(list_idx, entry)[:w-1]
             attr = curses.A_REVERSE if list_idx == self.selected_idx else curses.A_NORMAL
             self.stdscr.addstr(y_pos, 0, line, attr)
 
     def _format_file_entry(self, idx, entry):
         prefix = '[x] ' if idx in self.marked_files else '[ ] '
         type_indicator = '/' if entry['is_dir'] else ' '
-        return f"{prefix}{entry['name']}{type_indicator}".ljust(80)[:80]
+        return f"{prefix}{entry['name']}{type_indicator}"
 
     def handle_input(self):
         key = self.stdscr.getch()
@@ -290,8 +290,8 @@ class FileBrowser:
 
     def _confirm_restore(self, target_dir, count):
         h, w = self.stdscr.getmaxyx()
-        prompt = f"Restore {count} items to {target_dir}? (y/N)"
-        self.stdscr.addstr(h-1, 0, prompt[:w-1], curses.A_BOLD)
+        prompt = f"Restore {count} items to {target_dir}? (y/N)"[:w-1]
+        self.stdscr.addstr(h-1, 0, prompt, curses.A_BOLD)
         self.stdscr.refresh()
         return self.stdscr.getch() in (ord('y'), ord('Y'))
 
@@ -323,8 +323,8 @@ class FileBrowser:
 
     def _confirm_overwrite(self, path):
         h, w = self.stdscr.getmaxyx()
-        prompt = f"Overwrite {os.path.basename(path)}? (y/N)"
-        self.stdscr.addstr(h-1, 0, prompt[:w-1], curses.A_BOLD)
+        prompt = f"Overwrite {os.path.basename(path)}? (y/N)"[:w-1]
+        self.stdscr.addstr(h-1, 0, prompt, curses.A_BOLD)
         self.stdscr.refresh()
         return self.stdscr.getch() in (ord('y'), ord('Y'))
 
@@ -334,32 +334,28 @@ class FileBrowser:
         input_str = os.path.expanduser(default_path)
         cursor_pos = len(input_str)
 
-        curses.echo()
-        try:
-            while True:
-                self._draw_input_line(h, w, prompt, input_str, cursor_pos)
-                key = self.stdscr.getch()
+        while True:
+            self._draw_input_line(h, w, prompt, input_str, cursor_pos)
+            key = self.stdscr.getch()
 
-                if key == 27:
-                    return None
-                elif key in (curses.KEY_ENTER, 10):
-                    break
-                elif key in (curses.KEY_BACKSPACE, 127, 8):
-                    input_str, cursor_pos = self._handle_backspace(input_str, cursor_pos)
-                elif key == curses.KEY_LEFT:
-                    cursor_pos = max(0, cursor_pos-1)
-                elif key == curses.KEY_RIGHT:
-                    cursor_pos = min(len(input_str), cursor_pos+1)
-                elif 32 <= key <= 126:
-                    input_str, cursor_pos = self._handle_char_input(input_str, cursor_pos, key)
+            if key == 27:
+                return None
+            elif key in (curses.KEY_ENTER, 10):
+                break
+            elif key in (curses.KEY_BACKSPACE, 127, 8):
+                input_str, cursor_pos = self._handle_backspace(input_str, cursor_pos)
+            elif key == curses.KEY_LEFT:
+                cursor_pos = max(0, cursor_pos-1)
+            elif key == curses.KEY_RIGHT:
+                cursor_pos = min(len(input_str), cursor_pos+1)
+            elif 32 <= key <= 126:
+                input_str, cursor_pos = self._handle_char_input(input_str, cursor_pos, key)
 
-            return os.path.abspath(input_str)
-        finally:
-            curses.noecho()
+        return os.path.abspath(input_str)
 
     def _draw_input_line(self, h, w, prompt, input_str, cursor_pos):
-        display = prompt + input_str
-        self.stdscr.addstr(h-1, 0, display.ljust(w-1), curses.A_REVERSE)
+        display = (prompt + input_str)[:w-1]
+        self.stdscr.addstr(h-1, 0, display, curses.A_REVERSE)
         self.stdscr.move(h-1, len(prompt) + cursor_pos)
 
     def _handle_backspace(self, input_str, cursor_pos):
@@ -386,7 +382,6 @@ class ZFSSnapshotManager:
         self.active_clones = []
         self.colors = CursesColors.init_colors()
         self.zvol_datasets = self._get_zvol_datasets()
-        self.partition_selected_idx = 0
         self.zvol_history = {}
         self._register_cleanup()
 
@@ -418,9 +413,7 @@ class ZFSSnapshotManager:
         except Exception as e:
             pass
 
-    @staticmethod
-    @lru_cache(maxsize=1)
-    def _get_zvol_datasets():
+    def _get_zvol_datasets(self):
         try:
             output = subprocess.check_output(
                 ['zfs', 'list', '-H', '-t', 'volume', '-o', 'name'],
@@ -462,7 +455,7 @@ class ZFSSnapshotManager:
 
     def show_error(self, message):
         h, w = self.stdscr.getmaxyx()
-        self.stdscr.addstr(h-1, 0, message.ljust(w-1), self.colors['error'])
+        self.stdscr.addstr(h-1, 0, message[:w-1], self.colors['error'])
         self.stdscr.refresh()
         time.sleep(2)
 
@@ -480,7 +473,7 @@ class ZFSSnapshotManager:
         self.stdscr.erase()
         h, w = self.stdscr.getmaxyx()
 
-        self.stdscr.addstr(0, 0, " ZFS Snapshots ".center(w, ' '), self.colors['header'])
+        self.stdscr.addstr(0, 0, " ZFS Snapshots ".center(w, ' ')[:w-1], self.colors['header'])
 
         max_rows = h - 4
         start_idx = max(0, self.selected_idx - max_rows + 1)
@@ -491,8 +484,8 @@ class ZFSSnapshotManager:
                 break
             self._draw_list_item(display_idx + 1, list_idx, w)
 
-        status = f"Snapshots: {len(self.filtered_indices)}/{len(self.snapshots)} | Marked: {len(self.marked_snapshots)}"
-        self.stdscr.addstr(h-3, 0, status.ljust(w-1), curses.A_BOLD)
+        status = f"Snapshots: {len(self.filtered_indices)}/{len(self.snapshots)} | Marked: {len(self.marked_snapshots)}"[:w-1]
+        self.stdscr.addstr(h-3, 0, status, curses.A_BOLD)
 
         if self.search_mode:
             self._draw_search_input(h, w)
@@ -506,13 +499,13 @@ class ZFSSnapshotManager:
         is_marked = orig_idx in self.marked_snapshots
 
         marker = '[x] ' if is_marked else '[ ] '
-        entry = f"{marker}{snap['name'].ljust(50)} {snap['used'].ljust(10)} {snap['refer']}"
+        entry = f"{marker}{snap['name'].ljust(50)} {snap['used'].ljust(10)} {snap['refer']}"[:width-1]
         attr = curses.A_REVERSE if is_selected else curses.A_NORMAL
-        self.stdscr.addstr(y_pos, 0, entry[:width-1], attr)
+        self.stdscr.addstr(y_pos, 0, entry, attr)
 
     def _draw_search_input(self, h, w):
-        display = f"/{self.search_query}"
-        self.stdscr.addstr(h-2, 0, display.ljust(w-1), curses.A_REVERSE)
+        display = f"/{self.search_query}"[:w-1]
+        self.stdscr.addstr(h-2, 0, display, curses.A_REVERSE)
 
     def delete_snapshots(self):
         targets = self._get_target_snapshots()
@@ -526,6 +519,7 @@ class ZFSSnapshotManager:
                     self.stdscr,
                     "Deleting snapshots...",
                     ('subprocess', ['zfs', 'destroy', '-r', target]),
+                    check=True
                 )
             except CalledProcessError as e:
                 self.show_error(f"Failed to delete {target}: {e.stderr.strip()}")
@@ -544,8 +538,8 @@ class ZFSSnapshotManager:
 
     def _confirm_deletion(self, count):
         h, w = self.stdscr.getmaxyx()
-        prompt = f"Delete {count} snapshots? (y/N)"
-        self.stdscr.addstr(h-2, 0, prompt.ljust(w-1), curses.A_BOLD)
+        prompt = f"Delete {count} snapshots? (y/N)"[:w-1]
+        self.stdscr.addstr(h-2, 0, prompt, curses.A_BOLD)
         self.stdscr.refresh()
         return self.stdscr.getch() in (ord('y'), ord('Y'))
 
@@ -615,28 +609,19 @@ class ZFSSnapshotManager:
         raise TimeoutError(f"Mount operation timed out after {max_attempts*0.1} seconds")
 
     def _complete_dataset_setup(self, snap, clone_name, mount_point):
-        with subprocess.Popen(
+        subprocess.run(
             ['zfs', 'clone', snap['name'], clone_name],
+            check=True,
             stderr=subprocess.PIPE,
             text=True
-        ) as proc:
-            while proc.poll() is None:
-                time.sleep(0.1)
-        
-        with subprocess.Popen(
+        )
+        subprocess.run(
             ['zfs', 'set', f'mountpoint={mount_point}', clone_name],
+            check=True,
             stderr=subprocess.PIPE,
             text=True
-        ) as proc:
-            while proc.poll() is None:
-                time.sleep(0.1)
-        
-        for i in range(50):
-            if os.path.ismount(mount_point):
-                break
-            time.sleep(0.1)
-        else:
-            raise TimeoutError("Mount timed out")
+        )
+        self._wait_for_mount(mount_point)
 
     def _handle_dataset(self, snap):
         clone_name = f"{snap['name'].replace('@', '/')}-clone-{uuid.uuid4().hex[:8]}"
@@ -647,7 +632,7 @@ class ZFSSnapshotManager:
             CursesColors.show_loading(
                 self.stdscr,
                 "Preparing dataset...",
-                lambda **_: self._complete_dataset_setup(snap, clone_name, mount_point)
+                lambda: self._complete_dataset_setup(snap, clone_name, mount_point)
             )
             
             self.temp_mounts[mount_point] = clone_name
@@ -661,8 +646,11 @@ class ZFSSnapshotManager:
 
     def _complete_zvol_setup(self, snap, clone_name):
         try:
-            subprocess.run(['zfs', 'clone', snap['name'], clone_name], 
-                          check=True, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ['zfs', 'clone', snap['name'], clone_name],
+                check=True,
+                stderr=subprocess.DEVNULL
+            )
             time.sleep(0.5)
             device_path = f"/dev/zvol/{clone_name.replace('@', '/')}"
             partitions = glob.glob(f"{device_path}*")
@@ -676,8 +664,11 @@ class ZFSSnapshotManager:
                 return None, None
 
             mount_point = tempfile.mkdtemp(prefix='zvol-')
-            subprocess.run(['mount', partition, mount_point], 
-                          check=True, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                ['mount', partition, mount_point],
+                check=True,
+                stderr=subprocess.DEVNULL
+            )
             self._wait_for_mount(mount_point)
             return mount_point, clone_name
 
@@ -710,12 +701,12 @@ class ZFSSnapshotManager:
             return None, None
 
     def _select_partition(self, partitions):
-        selected_idx = self.partition_selected_idx
+        selected_idx = 0
         
         while True:
             self.stdscr.erase()
             h, w = self.stdscr.getmaxyx()
-            self.stdscr.addstr(0, 0, " Select partition (→/Enter to select) ".center(w, ' '), self.colors['header'])
+            self.stdscr.addstr(0, 0, " Select partition (→/Enter to select) ".center(w, ' ')[:w-1], self.colors['header'])
 
             max_rows = h - 2
             start_idx = max(0, selected_idx - max_rows + 1)
@@ -737,10 +728,8 @@ class ZFSSnapshotManager:
             elif key in (curses.KEY_DOWN, ord('j')):
                 selected_idx = min(len(partitions) - 1, selected_idx + 1)
             elif key in (10, curses.KEY_RIGHT):
-                self.partition_selected_idx = selected_idx
                 return partitions[selected_idx]
             elif key in (27, ord('q'), curses.KEY_LEFT):
-                self.partition_selected_idx = selected_idx
                 return None
 
     def _cleanup_resources(self, mount_point, clone_name, is_zvol):
