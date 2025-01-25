@@ -1,9 +1,9 @@
-# ZFS Snapshot Manager :floppy_disk:
+# ZFS Snapshot Browser :floppy_disk:
 
 ![Python Version](https://img.shields.io/badge/Python-3.6%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-An interactive terminal tool for managing ZFS snapshots with file recovery capabilities.
+An interactive terminal tool for browsing ZFS snapshots with file recovery capabilities.
 
 ## :warning: Critical Warning
 **This script requires root privileges and can cause irreversible data changes!**  
