@@ -1,7 +1,7 @@
 # ZFS Snapshot Browser :floppy_disk:
 
 ![Python Version](https://img.shields.io/badge/Python-3.6%2B-blue)
-![License](https://img.shields.io/badge/License-GNU-green)
+![License](https://img.shields.io/badge/License-GPL-green)
 
 An interactive terminal tool for browsing ZFS snapshots with file recovery capabilities.
 
@@ -42,7 +42,7 @@ q     - Quit
 ```
 
 ## :balance_scale: License
-GNU License - See LICENSE for details.
+GPL License - See LICENSE for details.
 
 ### Key Limitations:
 - No data integrity guarantees
