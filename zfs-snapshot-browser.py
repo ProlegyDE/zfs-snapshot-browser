@@ -138,9 +138,12 @@ class FileBrowser:
                 
             with os.scandir(self.current_dir) as entries:
                 for entry in entries:
-                    stat_info = entry.stat()
-                    is_dir = entry.is_dir()
-                    
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        stat_info = entry.stat(follow_symlinks=False)
+                    except Exception as e:
+                        continue
+
                     permissions = stat.filemode(stat_info.st_mode)
                     nlink = stat_info.st_nlink
                     owner = self.get_owner_name(stat_info.st_uid)
