@@ -14,6 +14,7 @@ import re
 import pwd
 import grp
 import stat
+import select
 from subprocess import CalledProcessError
 from functools import lru_cache
 
@@ -60,16 +61,29 @@ class CursesColors:
                 subprocess_args.update(kwargs)
                 
                 proc = subprocess.Popen(cmd, *args, **subprocess_args)
+                stdout, stderr = '', ''
+
                 while proc.poll() is None:
                     win.addstr(1, len(message) + 2, next(spinner))
                     win.refresh()
+                    rlist, _, _ = select.select([proc.stdout], [], [], 0.1)
+                    if proc.stdout in rlist:
+                        chunk = proc.stdout.read()
+                        stdout += chunk if chunk else ''
                     time.sleep(0.1)
+                
+                remaining_stdout, remaining_stderr = proc.communicate()
+                stdout += remaining_stdout if remaining_stdout else ''
+                stderr += remaining_stderr if remaining_stderr else ''
+
                 if proc.returncode != 0:
                     error = CalledProcessError(
                         proc.returncode, cmd,
-                        output=proc.stdout.read() if proc.stdout else '',
-                        stderr=proc.stderr.read() if proc.stderr else ''
+                        output=stdout,
+                        stderr=stderr
                     )
+                else:
+                    result = stdout
             else:
                 result = operation(*args, **kwargs)
         except Exception as e:
@@ -116,7 +130,11 @@ class FileBrowser:
         if hasattr(self, 'mount_point') and self.mount_point:
             try:
                 if self.is_zvol and os.path.ismount(self.mount_point):
-                    subprocess.run(['umount', self.mount_point], check=False)
+                    CursesColors.show_loading(
+                        self.stdscr,
+                        "Unmounting zvol...",
+                        ('subprocess', ['umount', self.mount_point])
+                    )
                 shutil.rmtree(self.mount_point, ignore_errors=True)
             except Exception as e:
                 pass
@@ -224,7 +242,7 @@ class FileBrowser:
             self._draw_file_list(h, w)
 
         status = (
-            f"[←]Back [→]Open [↑↓]Move [ ]Mark [R]Restore "
+            f"[←]Back [→]Open [↑↓]Move [Space]Mark [R]Restore "
             f"[PgUp/PgDn]Page [q]Quit | Marked: {len(self.marked_files)}"
         )[:w-1]
         self.stdscr.addstr(h-2, 0, status, curses.A_BOLD)
@@ -339,20 +357,28 @@ class FileBrowser:
 
         relative_path = os.path.relpath(self.current_dir, self.mount_point)
         default_target = os.path.join(SCRIPT_DIR, relative_path)
-        target_dir = self.get_restore_target(default_target)
+        target_dir = CursesColors.show_loading(
+            self.stdscr,
+            "Preparing restore...",
+            self.get_restore_target,
+            default_target
+        )
 
         if not target_dir or not self._confirm_restore(target_dir, len(self.marked_files)):
             return
 
         try:
-            os.makedirs(target_dir, exist_ok=True)
+            CursesColors.show_loading(
+                self.stdscr,
+                "Creating directories...",
+                lambda: os.makedirs(target_dir, exist_ok=True)
+            )
+            
             for idx in self.marked_files:
                 CursesColors.show_loading(
                     self.stdscr,
-                    "Restoring files...",
-                    self._restore_single_file,
-                    idx,
-                    target_dir
+                    f"Restoring {self.files[idx]['name']}...",
+                    lambda: self._restore_single_file(idx, target_dir)
                 )
             
             self.marked_files.clear()
@@ -401,6 +427,14 @@ class FileBrowser:
         return self.stdscr.getch() in (ord('y'), ord('Y'))
 
     def get_restore_target(self, default_path):
+        return CursesColors.show_loading(
+            self.stdscr,
+            "Enter restore path...",
+            self._get_restore_target_interactive,
+            default_path
+        )
+
+    def _get_restore_target_interactive(self, default_path):
         h, w = self.stdscr.getmaxyx()
         prompt = "Restore to: "
         input_str = os.path.expanduser(default_path)
@@ -471,13 +505,24 @@ class ZFSSnapshotManager:
     def _force_cleanup(self):
         try:
             for mp, cn in self.temp_mounts.items():
-                if os.path.ismount(mp):
-                    subprocess.run(['umount', mp], check=False)
+                CursesColors.show_loading(
+                    self.stdscr,
+                    "Cleaning up mounts...",
+                    lambda: subprocess.run(['umount', mp], check=False)
+                )
                 shutil.rmtree(mp, ignore_errors=True)
-                subprocess.run(['zfs', 'destroy', '-r', cn], check=False)
+                CursesColors.show_loading(
+                    self.stdscr,
+                    "Destroying clones...",
+                    lambda: subprocess.run(['zfs', 'destroy', '-r', cn], check=False)
+                )
             
             for clone in self.active_clones:
-                subprocess.run(['zfs', 'destroy', '-r', clone], check=False)
+                CursesColors.show_loading(
+                    self.stdscr,
+                    "Removing clones...",
+                    lambda: subprocess.run(['zfs', 'destroy', '-r', clone], check=False)
+                )
                 
             self.temp_mounts.clear()
             self.active_clones.clear()
@@ -486,9 +531,12 @@ class ZFSSnapshotManager:
 
     def _get_zvol_datasets(self):
         try:
-            output = subprocess.check_output(
-                ['zfs', 'list', '-H', '-t', 'volume', '-o', 'name'],
-                text=True, stderr=subprocess.DEVNULL
+            output = CursesColors.show_loading(
+                self.stdscr,
+                "Detecting zvols...",
+                ('subprocess', ['zfs', 'list', '-H', '-t', 'volume', '-o', 'name']),
+                text=True,
+                stderr=subprocess.DEVNULL
             )
             return set(output.strip().split('\n'))
         except subprocess.CalledProcessError:
@@ -496,9 +544,12 @@ class ZFSSnapshotManager:
 
     def load_snapshots(self):
         try:
-            output = subprocess.check_output(
-                ['zfs', 'list', '-t', 'snapshot', '-H', '-o', 'name,used,refer'],
-                text=True, stderr=subprocess.DEVNULL
+            output = CursesColors.show_loading(
+                self.stdscr,
+                "Loading snapshots...",
+                ('subprocess', ['zfs', 'list', '-t', 'snapshot', '-H', '-o', 'name,used,refer']),
+                text=True,
+                stderr=subprocess.DEVNULL
             )
             self.snapshots = []
             for line in output.strip().split('\n'):
@@ -515,6 +566,8 @@ class ZFSSnapshotManager:
             self.update_filtered_indices()
         except CalledProcessError as e:
             self.show_error(f"Error loading snapshots: {e}")
+        except Exception as e:
+            self.show_error(f"Unexpected error: {str(e)}")
 
     def update_filtered_indices(self):
         query = self.search_query.lower()
@@ -556,7 +609,7 @@ class ZFSSnapshotManager:
             self._draw_list_item(display_idx + 1, list_idx, w)
 
         status = (
-            f"[→]Open [↑↓]Move [ ]Mark [d]Delete [/]Search [PgUp/PgDn]Page [q]Quit | "
+            f"[→]Open [↑↓]Move [Space]Mark [d]Delete [/]Search [PgUp/PgDn]Page [q]Quit | "
             f"Snapshots: {len(self.filtered_indices)}/{len(self.snapshots)} | Marked: {len(self.marked_snapshots)}"
         )[:w-1]
         self.stdscr.addstr(h-3, 0, status, curses.A_BOLD)
@@ -655,27 +708,30 @@ class ZFSSnapshotManager:
             self._cleanup_resources(mount_point, clone_name, snap.get('is_zvol', False))
 
     def _wait_for_mount(self, mount_point):
-        max_attempts = 1200
-        for _ in range(max_attempts):
+        for _ in range(120):
             if os.path.ismount(mount_point):
                 return
             time.sleep(0.1)
-        raise TimeoutError(f"Mount operation timed out after {max_attempts*0.1} seconds")
+        raise TimeoutError(f"Mount timeout for {mount_point}")
 
     def _complete_dataset_setup(self, snap, clone_name, mount_point):
-        subprocess.run(
-            ['zfs', 'clone', snap['name'], clone_name],
-            check=True,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        subprocess.run(
-            ['zfs', 'set', f'mountpoint={mount_point}', clone_name],
-            check=True,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        self._wait_for_mount(mount_point)
+        try:
+            CursesColors.show_loading(
+                self.stdscr,
+                "Cloning dataset...",
+                ('subprocess', ['zfs', 'clone', snap['name'], clone_name])
+            )
+            
+            CursesColors.show_loading(
+                self.stdscr,
+                "Setting mountpoint...",
+                ('subprocess', ['zfs', 'set', f'mountpoint={mount_point}', clone_name])
+            )
+            
+            self._wait_for_mount(mount_point)
+
+        except Exception as e:
+            raise RuntimeError(f"Dataset setup failed: {str(e)}")
 
     def _handle_dataset(self, snap):
         clone_name = f"{snap['name'].replace('@', '/')}-clone-{uuid.uuid4().hex[:8]}"
@@ -683,12 +739,7 @@ class ZFSSnapshotManager:
         mount_point = tempfile.mkdtemp(prefix='zfs-browser-')
 
         try:
-            CursesColors.show_loading(
-                self.stdscr,
-                "Preparing dataset...",
-                lambda: self._complete_dataset_setup(snap, clone_name, mount_point)
-            )
-            
+            self._complete_dataset_setup(snap, clone_name, mount_point)
             self.temp_mounts[mount_point] = clone_name
             return mount_point, clone_name
         except Exception as e:
@@ -700,51 +751,54 @@ class ZFSSnapshotManager:
 
     def _complete_zvol_setup(self, snap, clone_name):
         try:
-            subprocess.run(
-                ['zfs', 'clone', snap['name'], clone_name],
-                check=True,
-                stderr=subprocess.DEVNULL
+            CursesColors.show_loading(
+                self.stdscr,
+                "Cloning zvol...",
+                ('subprocess', ['zfs', 'clone', snap['name'], clone_name])
             )
-            time.sleep(0.5)
+
             device_path = f"/dev/zvol/{clone_name.replace('@', '/')}"
-            
-            all_devices = glob.glob(f"{device_path}*")
+            time.sleep(0.5)
+
+            all_devices = CursesColors.show_loading(
+                self.stdscr,
+                "Scanning partitions...",
+                lambda: glob.glob(f"{device_path}*")
+            )
+
             partitions = [d for d in all_devices if re.search(r'-part\d+$', d)]
-            
             if not partitions:
                 raise ValueError("No partitions found")
 
-            partition = self._select_partition(partitions)
+            partition = CursesColors.show_loading(
+                self.stdscr,
+                "Selecting partition...",
+                lambda: self._select_partition(partitions)
+            )
+
             if not partition:
-                subprocess.run(['zfs', 'destroy', clone_name], check=False)
-                return None, None
+                raise RuntimeError("No partition selected")
 
             mount_point = tempfile.mkdtemp(prefix='zvol-')
-            subprocess.run(
-                ['mount', partition, mount_point],
-                check=True,
-                stderr=subprocess.DEVNULL
+            
+            CursesColors.show_loading(
+                self.stdscr,
+                "Mounting partition...",
+                ('subprocess', ['mount', partition, mount_point])
             )
+            
             self._wait_for_mount(mount_point)
             return mount_point, clone_name
 
         except Exception as e:
-            subprocess.run(['zfs', 'destroy', clone_name], check=False)
-            if 'mount_point' in locals():
-                shutil.rmtree(mount_point, ignore_errors=True)
-            raise
+            raise RuntimeError(f"ZVOL setup failed: {str(e)}")
 
     def _handle_zvol(self, snap):
         clone_name = f"{snap['name'].replace('@', '-')}-clone-{uuid.uuid4().hex[:8]}"
         self.active_clones.append(clone_name)
         
         try:
-            result = CursesColors.show_loading(
-                self.stdscr,
-                "Mounting zvol...",
-                lambda: self._complete_zvol_setup(snap, clone_name)
-            )
-            
+            result = self._complete_zvol_setup(snap, clone_name)
             if not result or not result[0]:
                 return None, None
                 
@@ -759,6 +813,7 @@ class ZFSSnapshotManager:
     def _get_partition_info(self, partition):
         info = {'size': 'Unknown', 'fs_type': 'Unknown', 'part_type': 'Unknown'}
         try:
+            # Direkter Aufruf ohne Loading-Screen
             info['size'] = subprocess.check_output(
                 ['lsblk', '-n', '-o', 'SIZE', partition],
                 text=True, stderr=subprocess.DEVNULL
@@ -816,6 +871,7 @@ class ZFSSnapshotManager:
                 if y >= h:
                     break
 
+                # Loading-Screen entfernt für schnelle Navigation
                 part_info = self._get_partition_info(partitions[i])
                 line = self._format_partition_line(partitions[i], part_info, w)
                 
@@ -842,15 +898,27 @@ class ZFSSnapshotManager:
         try:
             if mount_point:
                 if is_zvol:
-                    subprocess.run(['umount', mount_point], check=False)
+                    CursesColors.show_loading(
+                        self.stdscr,
+                        "Unmounting partition...",
+                        ('subprocess', ['umount', mount_point])
+                    )
                 else:
-                    subprocess.run(['zfs', 'unmount', clone_name], check=False)
+                    CursesColors.show_loading(
+                        self.stdscr,
+                        "Unmounting dataset...",
+                        ('subprocess', ['zfs', 'unmount', clone_name])
+                    )
                 shutil.rmtree(mount_point, ignore_errors=True)
                 if mount_point in self.temp_mounts:
                     del self.temp_mounts[mount_point]
             
             if clone_name:
-                subprocess.run(['zfs', 'destroy', '-r', clone_name], check=False)
+                CursesColors.show_loading(
+                    self.stdscr,
+                    "Destroying clone...",
+                    ('subprocess', ['zfs', 'destroy', '-r', clone_name])
+                )
                 if clone_name in self.active_clones:
                     self.active_clones.remove(clone_name)
                 
@@ -873,6 +941,7 @@ class ZFSSnapshotManager:
             ord(' '): self._toggle_mark,
             ord('d'): self.delete_snapshots,
             ord('/'): lambda: setattr(self, 'search_mode', True),
+           
             curses.KEY_RIGHT: self.open_snapshot,
             curses.KEY_PPAGE: lambda: self._page_selection('up'),
             curses.KEY_NPAGE: lambda: self._page_selection('down')
