@@ -223,7 +223,6 @@ class FileBrowser:
         else:
             self._draw_file_list(h, w)
 
-        # Update the status line with all key bindings
         status = (
             f"[←]Back [→]Open [↑↓]Move [ ]Mark [R]Restore "
             f"[PgUp/PgDn]Page [q]Quit | Marked: {len(self.marked_files)}"
@@ -556,7 +555,10 @@ class ZFSSnapshotManager:
                 break
             self._draw_list_item(display_idx + 1, list_idx, w)
 
-        status = f"Snapshots: {len(self.filtered_indices)}/{len(self.snapshots)} | Marked: {len(self.marked_snapshots)}"[:w-1]
+        status = (
+            f"[→]Open [↑↓]Move [ ]Mark [d]Delete [/]Search [PgUp/PgDn]Page [q]Quit | "
+            f"Snapshots: {len(self.filtered_indices)}/{len(self.snapshots)} | Marked: {len(self.marked_snapshots)}"
+        )[:w-1]
         self.stdscr.addstr(h-3, 0, status, curses.A_BOLD)
 
         if self.search_mode:
