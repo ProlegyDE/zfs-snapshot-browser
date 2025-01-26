@@ -438,7 +438,6 @@ class ZFSSnapshotManager:
         self.active_clones = []
         self.colors = CursesColors.init_colors()
         self.zvol_datasets = self._get_zvol_datasets()
-        self.zvol_history = {}
         self._register_cleanup()
 
         curses.curs_set(0)
@@ -610,27 +609,15 @@ class ZFSSnapshotManager:
 
         try:
             if snap['is_zvol']:
-                prev_state = self.zvol_history.get(snap['name'])
-                if prev_state:
-                    mp_state, browser_state = prev_state
-                    browser = FileBrowser(
-                        self.stdscr,
-                        snap['name'],
-                        mp_state,
-                        is_zvol=True
-                    )
-                    browser.history = browser_state['history']
-                    browser.selected_idx = browser_state['selected_idx']
-                else:
-                    mount_point, clone_name = self._handle_zvol(snap)
-                    if not mount_point:
-                        return
-                    browser = FileBrowser(
-                        self.stdscr,
-                        snap['name'],
-                        mount_point,
-                        is_zvol=True
-                    )
+                mount_point, clone_name = self._handle_zvol(snap)
+                if not mount_point:
+                    return
+                browser = FileBrowser(
+                    self.stdscr,
+                    snap['name'],
+                    mount_point,
+                    is_zvol=True
+                )
             else:
                 mount_point, clone_name = self._handle_dataset(snap)
                 browser = FileBrowser(
@@ -642,14 +629,6 @@ class ZFSSnapshotManager:
             while browser.running:
                 browser.draw_ui()
                 browser.handle_input()
-
-            self.zvol_history[snap['name']] = (
-                browser.current_dir,
-                {
-                    'history': browser.history,
-                    'selected_idx': browser.selected_idx
-                }
-            )
 
         except Exception as e:
             self.show_error(f"Error: {str(e)}")
