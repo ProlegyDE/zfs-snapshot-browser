@@ -11,6 +11,9 @@ import signal
 import sys
 import itertools
 import re
+import pwd
+import grp
+import stat
 from subprocess import CalledProcessError
 from functools import lru_cache
 
@@ -135,10 +138,25 @@ class FileBrowser:
                 
             with os.scandir(self.current_dir) as entries:
                 for entry in entries:
+                    stat_info = entry.stat()
+                    is_dir = entry.is_dir()
+                    
+                    permissions = stat.filemode(stat_info.st_mode)
+                    nlink = stat_info.st_nlink
+                    owner = self.get_owner_name(stat_info.st_uid)
+                    group = self.get_group_name(stat_info.st_gid)
+                    size = self.human_readable_size(stat_info.st_size) if not is_dir else '0'
+                    mtime = self.format_time(stat_info.st_mtime)
+
                     self.files.append({
                         'name': entry.name,
-                        'is_dir': entry.is_dir(),
-                        'size': entry.stat().st_size if entry.is_file() else 0
+                        'is_dir': is_dir,
+                        'permissions': permissions,
+                        'nlink': nlink,
+                        'owner': owner,
+                        'group': group,
+                        'size': size,
+                        'mtime': mtime
                     })
                 
                 self.empty_directory = not bool(self.files)
@@ -148,6 +166,37 @@ class FileBrowser:
         except Exception as e:
             self.show_error(str(e))
             self.running = False
+
+    def get_owner_name(self, uid):
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return str(uid)
+
+    def get_group_name(self, gid):
+        try:
+            return grp.getgrgid(gid).gr_name
+        except KeyError:
+            return str(gid)
+
+    def human_readable_size(self, size):
+        suffixes = ['B', 'K', 'M', 'G', 'T', 'P']
+        if size == 0:
+            return '0B'
+        i = 0
+        while size >= 1024 and i < len(suffixes)-1:
+            size /= 1024.0
+            i += 1
+        return f"{size:.1f}{suffixes[i]}" if i != 0 else f"{size}B"
+
+    def format_time(self, mtime):
+        now = time.time()
+        six_months_ago = now - (6 * 30 * 24 * 3600)
+        struct_time = time.localtime(mtime)
+        if mtime > six_months_ago:
+            return time.strftime("%b %d %H:%M", struct_time)
+        else:
+            return time.strftime("%b %d  %Y", struct_time)
 
     def show_error(self, message):
         h, w = self.stdscr.getmaxyx()
@@ -204,8 +253,14 @@ class FileBrowser:
 
     def _format_file_entry(self, idx, entry):
         prefix = '[x] ' if idx in self.marked_files else '[ ] '
-        type_indicator = '/' if entry['is_dir'] else ' '
-        return f"{prefix}{entry['name']}{type_indicator}"
+        name_display = entry['name'] + '/' if entry['is_dir'] else entry['name']
+        return (f"{prefix}{entry['permissions']} "
+                f"{entry['nlink']:>4} "
+                f"{entry['owner'][:8]:<8} "
+                f"{entry['group'][:8]:<8} "
+                f"{entry['size']:>6} "
+                f"{entry['mtime']} "
+                f"{name_display}")
 
     def handle_input(self):
         key = self.stdscr.getch()
