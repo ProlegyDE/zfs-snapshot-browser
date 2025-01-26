@@ -10,12 +10,13 @@ import glob
 import signal
 import sys
 import itertools
+import re
 from subprocess import CalledProcessError
 from functools import lru_cache
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 
-# ------------------ Hilfsfunktionen ------------------
+# ------------------ Helper Functions ------------------
 def check_root():
     if os.geteuid() != 0:
         print("This script requires root privileges. Please run with sudo.")
@@ -78,7 +79,7 @@ class CursesColors:
                 raise error
         return result
 
-# ------------------ FileBrowser Klasse ------------------
+# ------------------ FileBrowser Class ------------------
 class FileBrowser:
     def __init__(self, stdscr, source_name, mount_point, is_zvol=False):
         self.stdscr = stdscr
@@ -367,7 +368,7 @@ class FileBrowser:
         new_char = chr(key)
         return input_str[:cursor_pos] + new_char + input_str[cursor_pos:], cursor_pos + 1
 
-# ------------------ ZFSSnapshotManager Klasse ------------------
+# ------------------ ZFSSnapshotManager Class ------------------
 class ZFSSnapshotManager:
     def __init__(self, stdscr):
         self.stdscr = stdscr
@@ -653,7 +654,9 @@ class ZFSSnapshotManager:
             )
             time.sleep(0.5)
             device_path = f"/dev/zvol/{clone_name.replace('@', '/')}"
-            partitions = glob.glob(f"{device_path}*")
+            
+            all_devices = glob.glob(f"{device_path}*")
+            partitions = [d for d in all_devices if re.search(r'-part\d+$', d)]
             
             if not partitions:
                 raise ValueError("No partitions found")
@@ -700,13 +703,57 @@ class ZFSSnapshotManager:
             self.show_error(f"ZVOL Error: {str(e)}")
             return None, None
 
+    def _get_partition_info(self, partition):
+        info = {'size': 'Unknown', 'fs_type': 'Unknown', 'part_type': 'Unknown'}
+        try:
+            info['size'] = subprocess.check_output(
+                ['lsblk', '-n', '-o', 'SIZE', partition],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+        except Exception:
+            pass
+
+        try:
+            fs_type = subprocess.check_output(
+                ['lsblk', '-n', '-o', 'FSTYPE', partition],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if not fs_type:
+                fs_type = subprocess.check_output(
+                    ['blkid', '-o', 'value', '-s', 'TYPE', partition],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+            info['fs_type'] = fs_type or 'None'
+        except Exception:
+            pass
+
+        try:
+            part_type = subprocess.check_output(
+                ['lsblk', '-n', '-o', 'PARTTYPENAME', partition],
+                text=True, stderr=subprocess.DEVNULL
+            ).strip()
+            if not part_type:
+                disk = partition.rstrip('0123456789')
+                part_num = partition[len(disk):]
+                part_type = subprocess.check_output(
+                    ['sfdisk', '--part-type', disk, part_num],
+                    text=True, stderr=subprocess.DEVNULL
+                ).strip()
+                info['part_type'] = f"MBR: 0x{part_type}"
+            else:
+                info['part_type'] = f"GPT: {part_type}"
+        except Exception:
+            pass
+
+        return info
+
     def _select_partition(self, partitions):
         selected_idx = 0
         
         while True:
             self.stdscr.erase()
             h, w = self.stdscr.getmaxyx()
-            self.stdscr.addstr(0, 0, " Select partition (→/Enter to select) ".center(w, ' ')[:w-1], self.colors['header'])
+            self.stdscr.addstr(0, 0, " Select partition (→/Enter to confirm) ".center(w, ' ')[:w-1], self.colors['header'])
 
             max_rows = h - 2
             start_idx = max(0, selected_idx - max_rows + 1)
@@ -716,7 +763,9 @@ class ZFSSnapshotManager:
                 if y >= h:
                     break
 
-                line = partitions[i][:w-1]
+                part_info = self._get_partition_info(partitions[i])
+                line = self._format_partition_line(partitions[i], part_info, w)
+                
                 attr = curses.A_REVERSE if i == selected_idx else curses.A_NORMAL
                 self.stdscr.addstr(y, 0, line, attr)
 
@@ -731,6 +780,10 @@ class ZFSSnapshotManager:
                 return partitions[selected_idx]
             elif key in (27, ord('q'), curses.KEY_LEFT):
                 return None
+
+    def _format_partition_line(self, device, info, width):
+        base = os.path.basename(device)
+        return f"{base.ljust(40)} {info['size'].rjust(8)} {info['fs_type'].ljust(10)} {info['part_type']}"[:width-1]
 
     def _cleanup_resources(self, mount_point, clone_name, is_zvol):
         try:
