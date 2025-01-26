@@ -223,7 +223,11 @@ class FileBrowser:
         else:
             self._draw_file_list(h, w)
 
-        status = f"[←]Back [→]Open [R]Restore [q]Close | Marked: {len(self.marked_files)}"[:w-1]
+        # Update the status line with all key bindings
+        status = (
+            f"[←]Back [→]Open [↑↓]Move [ ]Mark [R]Restore "
+            f"[PgUp/PgDn]Page [q]Quit | Marked: {len(self.marked_files)}"
+        )[:w-1]
         self.stdscr.addstr(h-2, 0, status, curses.A_BOLD)
         self.stdscr.refresh()
 
@@ -277,7 +281,9 @@ class FileBrowser:
             curses.KEY_UP: lambda: self._move_selection(-1),
             ord('k'): lambda: self._move_selection(-1),
             ord(' '): self._toggle_mark,
-            ord('R'): self.restore_files
+            ord('R'): self.restore_files,
+            curses.KEY_PPAGE: lambda: self._page_selection('up'),
+            curses.KEY_NPAGE: lambda: self._page_selection('down')
         }
 
         action = actions.get(key)
@@ -312,6 +318,14 @@ class FileBrowser:
         new_idx = self.selected_idx + delta
         if 0 <= new_idx < len(self.files):
             self.selected_idx = new_idx
+
+    def _page_selection(self, direction):
+        h, w = self.stdscr.getmaxyx()
+        max_rows = h - 4
+        if direction == 'up':
+            self.selected_idx = max(0, self.selected_idx - max_rows)
+        else:
+            self.selected_idx = min(len(self.files)-1, self.selected_idx + max_rows)
 
     def _toggle_mark(self):
         if 0 <= self.selected_idx < len(self.files):
