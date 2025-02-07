@@ -19,6 +19,10 @@ cd zfs-snapshot-browser
 chmod +x zfs-snapshot-browser.py
 ```
 
+## :white_check_mark: Requirements
+- Requires functional ZFS installation
+- Needs Python 3.6+ and curses library
+
 ## :computer: Features
 - Interactive TUI with curses interface
 - Snapshot browsing with search/filter
@@ -57,11 +61,6 @@ THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. THE AUTHOR SHALL
 - Incompatibilities with specific system configurations
 
 Use only on test systems or after thorough validation.
-
-## :mag: Legal Notes
-- Requires functional ZFS installation
-- Needs Python 3.6+ and curses library
-- Alters system states (mount points, ZFS clones)
 
 ## :handshake: Contributing
 Contributions are welcome! Please:
