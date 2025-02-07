@@ -21,7 +21,7 @@ chmod +x zfs-snapshot-browser.py
 
 ## :white_check_mark: Requirements
 - Requires functional ZFS installation
-- Needs Python 3.6+ and curses library
+- Needs Python 3.6+
 
 ## :computer: Features
 - Interactive TUI with curses interface
