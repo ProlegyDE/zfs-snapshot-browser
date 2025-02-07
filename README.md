@@ -62,7 +62,6 @@ Use only on test systems or after thorough validation.
 - Requires functional ZFS installation
 - Needs Python 3.6+ and curses library
 - Alters system states (mount points, ZFS clones)
-- Does not log user data
 
 ## :handshake: Contributing
 Contributions are welcome! Please:
