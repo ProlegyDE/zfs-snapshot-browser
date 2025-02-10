@@ -988,9 +988,12 @@ class ZFSSnapshotManager:
             self.update_filtered_indices()
 
     def run(self):
-        while self.running:
-            self.draw_ui()
-            self.handle_input()
+        try:
+            while self.running:
+                self.draw_ui()
+                self.handle_input()
+        finally:
+            self._force_cleanup()
 
 def main(stdscr):
     check_root()
