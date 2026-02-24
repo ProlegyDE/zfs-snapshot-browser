@@ -486,6 +486,7 @@ class ZFSSnapshotManager:
         self.search_query = ""
         self.temp_mounts = {}
         self.active_clones = []
+        self.active_vgs = []
         self.colors = CursesColors.init_colors()
         self.zvol_datasets = self._get_zvol_datasets()
         self._register_cleanup()
@@ -504,6 +505,15 @@ class ZFSSnapshotManager:
 
     def _force_cleanup(self):
         try:
+            for vg in self.active_vgs:
+                env = os.environ.copy()
+                env['LVM_SUPPRESS_FD_WARNINGS'] = '1'
+                CursesColors.show_loading(
+                    self.stdscr,
+                    "Deactivating LVM VG...",
+                    lambda: subprocess.run(['vgchange', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '-an', vg], check=False, stderr=subprocess.DEVNULL, env=env)
+                )
+
             for mp, cn in self.temp_mounts.items():
                 CursesColors.show_loading(
                     self.stdscr,
@@ -523,9 +533,10 @@ class ZFSSnapshotManager:
                     "Removing clones...",
                     lambda: subprocess.run(['zfs', 'destroy', '-r', clone], check=False)
                 )
-                
+
             self.temp_mounts.clear()
             self.active_clones.clear()
+            self.active_vgs.clear()
         except Exception as e:
             pass
 
@@ -708,12 +719,26 @@ class ZFSSnapshotManager:
                     if not partition:
                         break
 
+                    target_device = partition
+                    part_info = self._get_partition_info(partition)
+                    imported_vg = None
+
+                    if 'LVM2_member' in str(part_info.get('fs_type')) or 'LVM' in str(part_info.get('part_type')):
+                        imported_vg = self._handle_lvm_partition(partition)
+                        if not imported_vg:
+                            continue
+                        
+                        target_device = self._select_lvm_volume(imported_vg)
+                        if not target_device:
+                            self._cleanup_lvm(imported_vg)
+                            continue
+
                     mount_point = tempfile.mkdtemp(prefix='zvol-')
                     try:
                         CursesColors.show_loading(
                             self.stdscr,
-                            "Mounting partition...",
-                            ('subprocess', ['mount', partition, mount_point])
+                            "Mounting device...",
+                            ('subprocess', ['mount', target_device, mount_point])
                         )
                         
                         self._wait_for_mount(mount_point)
@@ -729,9 +754,13 @@ class ZFSSnapshotManager:
                         while browser.running:
                             browser.draw_ui()
                             browser.handle_input()
+                    except Exception as e:
+                        self.show_error(f"Failed to mount: {str(e)}")
                     finally:
                         self._cleanup_resources(mount_point, None, True)
                         mount_point = None
+                        if imported_vg:
+                            self._cleanup_lvm(imported_vg)
             else:
                 mount_point, clone_name = self._handle_dataset(snap)
                 browser = FileBrowser(
@@ -791,14 +820,131 @@ class ZFSSnapshotManager:
                 subprocess.run(['zfs', 'destroy', '-r', clone_name], check=False)
             raise
 
+    def _handle_lvm_partition(self, partition):
+        try:
+            env = os.environ.copy()
+            env['LVM_SUPPRESS_FD_WARNINGS'] = '1'
+            
+            output = subprocess.check_output(
+                ['pvs', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '--noheadings', '-o', 'vg_name', partition],
+                text=True, stderr=subprocess.DEVNULL, env=env
+            ).strip()
+            
+            existing_vg = None
+            if output:
+                existing_vg = output.splitlines()[-1].strip()
+                
+            if existing_vg and existing_vg.startswith('vg-clone-'):
+                vg_name = existing_vg
+            else:
+                vg_uuid = uuid.uuid4().hex[:8]
+                vg_name = f"vg-clone-{vg_uuid}"
+                CursesColors.show_loading(
+                    self.stdscr,
+                    f"Importing LVM VG...",
+                    ('subprocess', ['vgimportclone', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '-n', vg_name, partition]),
+                    stderr=subprocess.DEVNULL,
+                    env=env
+                )
+            
+            CursesColors.show_loading(
+                self.stdscr,
+                f"Activating LVM VG...",
+                ('subprocess', ['vgchange', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '-ay', vg_name]),
+                stderr=subprocess.DEVNULL,
+                env=env
+            )
+            if vg_name not in self.active_vgs:
+                self.active_vgs.append(vg_name)
+            return vg_name
+        except Exception as e:
+            self.show_error(f"Failed to handle LVM: {str(e)}")
+            return None
 
+    def _select_lvm_volume(self, vg_name):
+        try:
+            env = os.environ.copy()
+            env['LVM_SUPPRESS_FD_WARNINGS'] = '1'
+            
+            output = CursesColors.show_loading(
+                self.stdscr,
+                "Scanning LVM...",
+                ('subprocess', ['lvs', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '--noheadings', '-o', 'lv_name,lv_size,lv_path', vg_name]),
+                text=True, stderr=subprocess.DEVNULL, env=env
+            )
+            
+            lvs = []
+            for line in output.strip().split('\n'):
+                if not line.strip():
+                    continue
+                parts = line.split()
+                if len(parts) >= 3:
+                    lvs.append({
+                        'name': parts[0],
+                        'size': parts[1],
+                        'path': parts[2]
+                    })
+            if not lvs:
+                raise RuntimeError("No Logical Volumes found")
+                
+            selected_idx = 0
+            while True:
+                self.stdscr.erase()
+                h, w = self.stdscr.getmaxyx()
+                self.stdscr.addstr(0, 0, f" Select Logical Volume in {vg_name} (→/Enter to confirm) ".center(w, ' ')[:w-1], self.colors['header'])
+
+                max_rows = h - 2
+                start_idx = max(0, selected_idx - max_rows + 1)
+
+                for i in range(start_idx, min(start_idx + max_rows, len(lvs))):
+                    y = i - start_idx + 1
+                    if y >= h:
+                        break
+
+                    lv = lvs[i]
+                    part_info = self._get_partition_info(lv['path'])
+                    line = self._format_partition_line(f"{lv['name']} ({lv['size']})", part_info, w)
+                    
+                    attr = curses.A_REVERSE if i == selected_idx else curses.A_NORMAL
+                    self.stdscr.addstr(y, 0, line, attr)
+
+                self.stdscr.refresh()
+                key = self.stdscr.getch()
+
+                if key in (curses.KEY_UP, ord('k')):
+                    selected_idx = max(0, selected_idx - 1)
+                elif key in (curses.KEY_DOWN, ord('j')):
+                    selected_idx = min(len(lvs) - 1, selected_idx + 1)
+                elif key in (10, curses.KEY_RIGHT):
+                    return lvs[selected_idx]['path']
+                elif key in (27, ord('q'), curses.KEY_LEFT):
+                    return None
+                    
+        except Exception as e:
+            self.show_error(f"LVM Error: {str(e)}")
+            return None
+
+    def _cleanup_lvm(self, vg_name):
+        try:
+            env = os.environ.copy()
+            env['LVM_SUPPRESS_FD_WARNINGS'] = '1'
+            CursesColors.show_loading(
+                self.stdscr,
+                "Deactivating LVM VG...",
+                ('subprocess', ['vgchange', '--config', 'devices { filter=["a|.*|"] global_filter=["a|.*|"] }', '-an', vg_name]),
+                stderr=subprocess.DEVNULL,
+                env=env,
+                check=False
+            )
+        except Exception:
+            pass
 
     def _get_partition_info(self, partition):
         info = {'size': 'Unknown', 'fs_type': 'Unknown', 'part_type': 'Unknown'}
         try:
-            # Direkter Aufruf ohne Loading-Screen
+            # Direkter Aufruf ohne Loading-Screen (-d fuer nodeps)
             info['size'] = subprocess.check_output(
-                ['lsblk', '-n', '-o', 'SIZE', partition],
+                ['lsblk', '-n', '-d', '-o', 'SIZE', partition],
                 text=True, stderr=subprocess.DEVNULL
             ).strip()
         except Exception:
@@ -806,7 +952,7 @@ class ZFSSnapshotManager:
 
         try:
             fs_type = subprocess.check_output(
-                ['lsblk', '-n', '-o', 'FSTYPE', partition],
+                ['lsblk', '-n', '-d', '-o', 'FSTYPE', partition],
                 text=True, stderr=subprocess.DEVNULL
             ).strip()
             if not fs_type:
@@ -820,7 +966,7 @@ class ZFSSnapshotManager:
 
         try:
             part_type = subprocess.check_output(
-                ['lsblk', '-n', '-o', 'PARTTYPENAME', partition],
+                ['lsblk', '-n', '-d', '-o', 'PARTTYPENAME', partition],
                 text=True, stderr=subprocess.DEVNULL
             ).strip()
             if not part_type:
