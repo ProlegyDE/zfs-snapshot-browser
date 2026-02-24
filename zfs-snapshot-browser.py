@@ -681,15 +681,57 @@ class ZFSSnapshotManager:
 
         try:
             if snap['is_zvol']:
-                mount_point, clone_name = self._handle_zvol(snap)
-                if not mount_point:
-                    return
-                browser = FileBrowser(
+                clone_name = f"{snap['name'].replace('@', '-')}-clone-{uuid.uuid4().hex[:8]}"
+                self.active_clones.append(clone_name)
+                
+                CursesColors.show_loading(
                     self.stdscr,
-                    snap['name'],
-                    mount_point,
-                    is_zvol=True
+                    "Cloning zvol...",
+                    ('subprocess', ['zfs', 'clone', snap['name'], clone_name])
                 )
+
+                device_path = f"/dev/zvol/{clone_name.replace('@', '/')}"
+                time.sleep(0.5)
+
+                all_devices = CursesColors.show_loading(
+                    self.stdscr,
+                    "Scanning partitions...",
+                    lambda: glob.glob(f"{device_path}*")
+                )
+
+                partitions = [d for d in all_devices if re.search(r'-part\d+$', d)]
+                if not partitions:
+                    raise RuntimeError("No partitions found")
+
+                while True:
+                    partition = self._select_partition(partitions)
+                    if not partition:
+                        break
+
+                    mount_point = tempfile.mkdtemp(prefix='zvol-')
+                    try:
+                        CursesColors.show_loading(
+                            self.stdscr,
+                            "Mounting partition...",
+                            ('subprocess', ['mount', partition, mount_point])
+                        )
+                        
+                        self._wait_for_mount(mount_point)
+                        self.temp_mounts[mount_point] = clone_name
+                        
+                        browser = FileBrowser(
+                            self.stdscr,
+                            snap['name'],
+                            mount_point,
+                            is_zvol=True
+                        )
+
+                        while browser.running:
+                            browser.draw_ui()
+                            browser.handle_input()
+                    finally:
+                        self._cleanup_resources(mount_point, None, True)
+                        mount_point = None
             else:
                 mount_point, clone_name = self._handle_dataset(snap)
                 browser = FileBrowser(
@@ -698,9 +740,9 @@ class ZFSSnapshotManager:
                     mount_point
                 )
 
-            while browser.running:
-                browser.draw_ui()
-                browser.handle_input()
+                while browser.running:
+                    browser.draw_ui()
+                    browser.handle_input()
 
         except Exception as e:
             self.show_error(f"Error: {str(e)}")
@@ -749,66 +791,7 @@ class ZFSSnapshotManager:
                 subprocess.run(['zfs', 'destroy', '-r', clone_name], check=False)
             raise
 
-    def _complete_zvol_setup(self, snap, clone_name):
-        try:
-            CursesColors.show_loading(
-                self.stdscr,
-                "Cloning zvol...",
-                ('subprocess', ['zfs', 'clone', snap['name'], clone_name])
-            )
 
-            device_path = f"/dev/zvol/{clone_name.replace('@', '/')}"
-            time.sleep(0.5)
-
-            all_devices = CursesColors.show_loading(
-                self.stdscr,
-                "Scanning partitions...",
-                lambda: glob.glob(f"{device_path}*")
-            )
-
-            partitions = [d for d in all_devices if re.search(r'-part\d+$', d)]
-            if not partitions:
-                raise ValueError("No partitions found")
-
-            partition = CursesColors.show_loading(
-                self.stdscr,
-                "Selecting partition...",
-                lambda: self._select_partition(partitions)
-            )
-
-            if not partition:
-                raise RuntimeError("No partition selected")
-
-            mount_point = tempfile.mkdtemp(prefix='zvol-')
-            
-            CursesColors.show_loading(
-                self.stdscr,
-                "Mounting partition...",
-                ('subprocess', ['mount', partition, mount_point])
-            )
-            
-            self._wait_for_mount(mount_point)
-            return mount_point, clone_name
-
-        except Exception as e:
-            raise RuntimeError(f"ZVOL setup failed: {str(e)}")
-
-    def _handle_zvol(self, snap):
-        clone_name = f"{snap['name'].replace('@', '-')}-clone-{uuid.uuid4().hex[:8]}"
-        self.active_clones.append(clone_name)
-        
-        try:
-            result = self._complete_zvol_setup(snap, clone_name)
-            if not result or not result[0]:
-                return None, None
-                
-            mount_point, clone_name = result
-            self.temp_mounts[mount_point] = clone_name
-            return mount_point, clone_name
-            
-        except Exception as e:
-            self.show_error(f"ZVOL Error: {str(e)}")
-            return None, None
 
     def _get_partition_info(self, partition):
         info = {'size': 'Unknown', 'fs_type': 'Unknown', 'part_type': 'Unknown'}
@@ -895,25 +878,34 @@ class ZFSSnapshotManager:
         return f"{base.ljust(40)} {info['size'].rjust(8)} {info['fs_type'].ljust(10)} {info['part_type']}"[:width-1]
 
     def _cleanup_resources(self, mount_point, clone_name, is_zvol):
-        try:
-            if mount_point:
+        if mount_point:
+            try:
                 if is_zvol:
-                    CursesColors.show_loading(
-                        self.stdscr,
-                        "Unmounting partition...",
-                        ('subprocess', ['umount', mount_point])
-                    )
+                    if os.path.ismount(mount_point):
+                        CursesColors.show_loading(
+                            self.stdscr,
+                            "Unmounting partition...",
+                            ('subprocess', ['umount', mount_point])
+                        )
                 else:
-                    CursesColors.show_loading(
-                        self.stdscr,
-                        "Unmounting dataset...",
-                        ('subprocess', ['zfs', 'unmount', clone_name])
-                    )
+                    if os.path.ismount(mount_point):
+                        CursesColors.show_loading(
+                            self.stdscr,
+                            "Unmounting dataset...",
+                            ('subprocess', ['zfs', 'unmount', clone_name])
+                        )
+            except Exception as e:
+                pass
+
+            try:
                 shutil.rmtree(mount_point, ignore_errors=True)
                 if mount_point in self.temp_mounts:
                     del self.temp_mounts[mount_point]
-            
-            if clone_name:
+            except Exception:
+                pass
+        
+        if clone_name:
+            try:
                 CursesColors.show_loading(
                     self.stdscr,
                     "Destroying clone...",
@@ -921,9 +913,8 @@ class ZFSSnapshotManager:
                 )
                 if clone_name in self.active_clones:
                     self.active_clones.remove(clone_name)
-                
-        except Exception as e:
-            self.show_error(f"Cleanup error: {str(e)}")
+            except Exception as e:
+                pass
 
     def handle_input(self):
         key = self.stdscr.getch()
